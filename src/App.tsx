@@ -84,6 +84,7 @@ export default function App() {
   // UI notifications
   const [copiedNotification, setCopiedNotification] = useState(false);
   const [isDetectingSchema, setIsDetectingSchema] = useState(false);
+  const [schemaDetectionError, setSchemaDetectionError] = useState<string | null>(null);
 
   /**
    * Handle user uploading a real folder or single/multiple workbooks
@@ -96,6 +97,7 @@ export default function App() {
     setCleanHistory([]);
     setDataInterpretation(null);
     setFullReport(null);
+    setSchemaDetectionError(null);
 
     // Check if uploaded files contain Excel spreadsheets (.xlsx, .xls, .csv)
     const excelFiles = loadedFiles.filter((f) => f.workbookData || f.fileCategory === 'excel');
@@ -116,25 +118,29 @@ export default function App() {
             files: loadedFiles.slice(0, 5).map((f) => ({
               name: f.name,
               relativePath: f.relativePath,
-              content: f.content,
+              content: f.content?.slice(0, 12000),
+              mimeType: f.mimeType,
+              base64: f.mimeType.startsWith('image/') ? f.base64 : undefined,
+              attachments: f.attachments,
             })),
           }),
         });
 
-        if (res.ok) {
-          const detected = await res.json();
-          if (detected.columns && detected.columns.length > 0) {
-            setSchema({
-              category: detected.category || 'Uploaded Documents',
-              spreadsheetTitle: detected.spreadsheetTitle || `${uploadedFolderName} Extracted Data`,
-              domainSummary: detected.domainSummary || 'Structured master dataset',
-              columns: detected.columns,
-              extractionInstructions: detected.extractionInstructions || '',
-            });
-          }
+        const detected = await res.json();
+        if (!res.ok) throw new Error(detected.error || 'Document analysis failed.');
+        if (!detected.columns?.length) {
+          throw new Error('No spreadsheet columns could be inferred from these documents.');
         }
+        setSchema({
+          category: detected.category || 'Uploaded Documents',
+          spreadsheetTitle: detected.spreadsheetTitle || `${uploadedFolderName} Extracted Data`,
+          domainSummary: detected.domainSummary || 'Structured master dataset',
+          columns: detected.columns,
+          extractionInstructions: detected.extractionInstructions || '',
+        });
       } catch (err) {
         console.warn('Schema detection error:', err);
+        setSchemaDetectionError(err instanceof Error ? err.message : 'Could not inspect these documents.');
       } finally {
         setIsDetectingSchema(false);
       }
@@ -150,6 +156,7 @@ export default function App() {
     try {
       const allRows: ExtractedRow[] = [];
       const headersMap = new Map<string, string>(); // canonicalKey -> displayLabel
+      const columnSamples = new Map<string, any[]>();
 
       // Include Workbook & Worksheet source indicators if multiple workbooks or multiple sheets
       const hasMultipleSheets = excelFiles.some((f) => (f.workbookData?.sheets.length || 0) > 1);
@@ -168,6 +175,17 @@ export default function App() {
             const cleanKey = h.trim().toLowerCase().replace(/[^a-zA-Z0-9]/g, '_') || h;
             if (!headersMap.has(cleanKey)) {
               headersMap.set(cleanKey, h.trim());
+            }
+            const samples = columnSamples.get(cleanKey) || [];
+            if (samples.length < 100) {
+              for (const row of sheet.allRows) {
+                const value = row[h];
+                if (value !== null && value !== undefined && String(value).trim() !== '') {
+                  samples.push(value);
+                  if (samples.length >= 100) break;
+                }
+              }
+              columnSamples.set(cleanKey, samples);
             }
           });
         });
@@ -201,6 +219,27 @@ export default function App() {
           lower.includes('percentage')
         )
           type = 'number';
+
+        const samples = columnSamples.get(key) || [];
+        if (type === 'string' && samples.length > 0) {
+          const identifierColumn = /(^|\b)(id|code|zip|postal|phone|account|reference|sku)(\b|$)/i.test(lower);
+          const booleanCount = samples.filter((value) =>
+            typeof value === 'boolean' || /^(true|false|yes|no)$/i.test(String(value).trim())
+          ).length;
+          const dateCount = samples.filter((value) =>
+            value instanceof Date ||
+            (/^\d{4}-\d{1,2}-\d{1,2}(?:[T ]|$)/.test(String(value).trim()) && !isNaN(new Date(value).getTime()))
+          ).length;
+          const numericCount = samples.filter((value) => {
+            if (typeof value === 'number') return Number.isFinite(value);
+            const text = String(value).trim();
+            return /^[+-]?(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?%?$/.test(text.replace(/^[$€£]\s*/, ''));
+          }).length;
+
+          if (booleanCount / samples.length >= 0.8) type = 'boolean';
+          else if (dateCount / samples.length >= 0.8) type = 'date';
+          else if (!identifierColumn && numericCount / samples.length >= 0.8) type = 'number';
+        }
 
         return {
           key,
@@ -266,6 +305,8 @@ export default function App() {
     setRowsHistory((prev) => [...prev, rows]);
     setCleanHistory((prev) => [historyItem, ...prev]);
     setRows(updatedRows);
+    setDataInterpretation(null);
+    setFullReport(null);
   };
 
   /**
@@ -474,7 +515,8 @@ export default function App() {
             relativePath: file.relativePath,
             mimeType: file.mimeType,
             content: file.content,
-            base64: file.base64,
+            base64: file.mimeType.startsWith('image/') ? file.base64 : undefined,
+            attachments: file.attachments,
           },
           schema,
           customInstructions: schema.extractionInstructions,
@@ -552,7 +594,8 @@ export default function App() {
               relativePath: file.relativePath,
               mimeType: file.mimeType,
               content: file.content,
-              base64: file.base64,
+              base64: file.mimeType.startsWith('image/') ? file.base64 : undefined,
+              attachments: file.attachments,
             },
             schema: targetSchema,
             customInstructions: targetSchema.extractionInstructions,
@@ -634,6 +677,8 @@ export default function App() {
                 name: file.name,
                 relativePath: file.relativePath,
                 content: file.content,
+                base64: file.mimeType.startsWith('image/') ? file.base64 : undefined,
+                attachments: file.attachments,
               },
             }),
           });
@@ -662,10 +707,44 @@ export default function App() {
     setRows((prev) =>
       prev.map((r) => (r.id === rowId ? { ...r, data: { ...r.data, [colKey]: newValue } } : r))
     );
+    setDataInterpretation(null);
+    setFullReport(null);
   };
 
   const handleDeleteRow = (rowId: string) => {
-    setRows((prev) => prev.filter((r) => r.id !== rowId));
+    handleUpdateCleanedRows(rows.filter((row) => row.id !== rowId), {
+      id: 'remove_row_' + Date.now(),
+      action: 'Remove row',
+      details: 'Removed one row from the active dataset.',
+      timestamp: new Date().toLocaleTimeString(),
+      affectedCount: 1,
+    });
+  };
+
+  const handleRemoveRows = (rowIds: string[]) => {
+    const rowIdSet = new Set(rowIds);
+    const remainingRows = rows.filter((row) => !rowIdSet.has(row.id));
+    handleUpdateCleanedRows(remainingRows, {
+      id: 'remove_rows_' + Date.now(),
+      action: 'Remove filtered rows',
+      details: `Removed ${rows.length - remainingRows.length} matching rows from the active dataset.`,
+      timestamp: new Date().toLocaleTimeString(),
+      affectedCount: rows.length - remainingRows.length,
+    });
+  };
+
+  const handleDeleteColumn = (colKey: string) => {
+    setSchema((current) => ({
+      ...current,
+      columns: current.columns.filter((column) => column.key !== colKey),
+    }));
+    setRows((current) => current.map((row) => {
+      const data = { ...row.data };
+      delete data[colKey];
+      return { ...row, data };
+    }));
+    setDataInterpretation(null);
+    setFullReport(null);
   };
 
   const handleDeleteFile = (fileId: string) => {
@@ -741,6 +820,13 @@ export default function App() {
           </div>
         ) : (
           <div className="space-y-4">
+            {schemaDetectionError && (
+              <div role="alert" className="border border-amber-800 bg-amber-950/40 px-4 py-3 text-sm text-amber-200">
+                <p className="font-semibold">Could not inspect the uploaded documents</p>
+                <p className="mt-1 text-xs text-amber-100/80">{schemaDetectionError} Check AI_PROVIDER and its API key (KILO_API_KEY or OPENAI_API_KEY), then upload the documents again.</p>
+              </div>
+            )}
+
             {/* Quick Action Navigation Bar for Active Dataset */}
             <div className="bg-slate-900 border border-slate-800 rounded-xl p-3 flex flex-wrap items-center justify-between gap-3 shadow-md">
               <div className="flex items-center space-x-3">
@@ -819,6 +905,8 @@ export default function App() {
                 files={files}
                 onUpdateCell={handleUpdateCell}
                 onDeleteRow={handleDeleteRow}
+                onRemoveRows={handleRemoveRows}
+                onDeleteColumn={handleDeleteColumn}
                 onInspectRow={(row) => setInspectedRow(row)}
                 onOpenSchemaEditor={() => setIsSchemaModalOpen(true)}
                 onOpenAddColumn={() => setIsAddColumnModalOpen(true)}

@@ -136,7 +136,7 @@ export const SchemaEditorModal: React.FC<SchemaEditorModalProps> = ({
               onClick={onAutoDetectSchema}
               disabled={isDetecting}
               className="px-3 py-1.5 rounded-lg text-xs font-medium bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-300 border border-indigo-500/40 flex items-center space-x-1.5 transition-colors disabled:opacity-50"
-              title="Ask Gemini to re-analyze sample files and regenerate optimal columns"
+              title="Ask the configured AI provider to re-analyze sample files and regenerate optimal columns"
             >
               <Sparkles className={`w-3.5 h-3.5 text-amber-300 ${isDetecting ? 'animate-spin' : ''}`} />
               <span>{isDetecting ? 'AI Analyzing...' : 'Auto-Detect Columns'}</span>
@@ -325,7 +325,7 @@ export const SchemaEditorModal: React.FC<SchemaEditorModalProps> = ({
               className="w-full bg-slate-800 border border-slate-700 rounded-lg p-3 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 leading-relaxed font-sans"
             />
             <p className="text-[11px] text-slate-400 mt-1">
-              Passed directly to the Gemini 3.8 Flash model when parsing each document in the folder.
+              Passed directly to the configured AI model when parsing each document in the folder.
             </p>
           </div>
         </div>

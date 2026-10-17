@@ -2,7 +2,8 @@ import express from 'express';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { GoogleGenAI, Type } from '@google/genai';
+import OpenAI from 'openai';
+import type { ChatCompletionContentPart } from 'openai/resources/chat/completions';
 
 dotenv.config();
 
@@ -16,15 +17,64 @@ const PORT = 3000;
 app.use(express.json({ limit: '60mb' }));
 app.use(express.urlencoded({ extended: true, limit: '60mb' }));
 
-// Server-Side Gemini client initialization
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY,
-  httpOptions: {
-    headers: {
-      'User-Agent': 'aistudio-build',
-    },
-  },
+const aiProvider = (process.env.AI_PROVIDER || (process.env.OPENAI_API_KEY ? 'openai' : 'kilo')).toLowerCase();
+const aiApiKey = process.env.AI_API_KEY || (aiProvider === 'openai' ? process.env.OPENAI_API_KEY : process.env.KILO_API_KEY);
+const aiBaseURL = process.env.AI_BASE_URL || (aiProvider === 'openai' ? undefined : 'https://ai-gateway.kilo.ai/api/v1');
+const aiModel = process.env.AI_MODEL || (aiProvider === 'openai' ? 'gpt-5.4-mini' : 'openai/gpt-5.4-mini');
+const ai = new OpenAI({ apiKey: aiApiKey || 'missing-api-key', baseURL: aiBaseURL });
+
+type ImageAttachment = { mimeType: string; base64: string };
+
+const getImageAttachments = (files: any[]): ImageAttachment[] => files.flatMap((file) => {
+  const attachments: ImageAttachment[] = [];
+  if (file.mimeType?.startsWith('image/') && file.base64) {
+    attachments.push({ mimeType: file.mimeType, base64: file.base64 });
+  }
+  for (const attachment of file.attachments || []) {
+    if (attachment.mimeType?.startsWith('image/') && attachment.base64) {
+      attachments.push(attachment);
+    }
+  }
+  return attachments;
 });
+
+async function generateAiText(prompt: string, options: { json?: boolean; attachments?: ImageAttachment[] } = {}) {
+  if (!aiApiKey) {
+    throw new Error('AI API key is not configured. Set KILO_API_KEY or OPENAI_API_KEY.');
+  }
+
+  const attachments = options.attachments || [];
+  const totalImageBytes = attachments.reduce((total, attachment) => total + Math.ceil(attachment.base64.length * 0.75), 0);
+  if (totalImageBytes > 12 * 1024 * 1024) {
+    throw new Error('Image attachments exceed the 12 MB request limit. Reduce image size or upload fewer pages.');
+  }
+
+  const content: string | ChatCompletionContentPart[] = attachments.length
+    ? [
+        { type: 'text', text: prompt },
+        ...attachments.map((attachment) => ({
+          type: 'image_url' as const,
+          image_url: {
+            url: `data:${attachment.mimeType};base64,${attachment.base64}`,
+            detail: 'high' as const,
+          },
+        })),
+      ]
+    : prompt;
+
+  const response = await ai.chat.completions.create({
+    model: aiModel,
+    messages: [{ role: 'user', content }],
+    ...(options.json ? { response_format: { type: 'json_object' as const } } : {}),
+  });
+  const result = response.choices[0]?.message.content;
+  if (!result) throw new Error('The AI provider returned an empty response.');
+  return result;
+}
+
+async function generateAiJson(prompt: string, attachments?: ImageAttachment[]) {
+  return JSON.parse(await generateAiText(prompt, { json: true, attachments }));
+}
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
@@ -33,7 +83,7 @@ app.get('/api/health', (req, res) => {
 
 /**
  * POST /api/detect-schema
- * Uses Gemini to examine file names, folder paths, and sample content extracts
+ * Uses an OpenAI-compatible model to examine file names, folder paths, and sample content extracts
  * to determine the folder topic and the best spreadsheet schema (columns & types).
  */
 app.post('/api/detect-schema', async (req, res) => {
@@ -44,11 +94,16 @@ app.post('/api/detect-schema', async (req, res) => {
       return res.status(400).json({ error: 'No files provided for schema detection' });
     }
 
-    // Prepare a compact sample of up to 5 files to send to Gemini
+    // Prepare a compact sample of up to 5 files
     const sampleFiles = files.slice(0, 5).map((f: any) => ({
       name: f.name,
       path: f.relativePath || f.name,
-      preview: f.content ? (f.content.length > 1200 ? f.content.substring(0, 1200) + '...' : f.content) : '(binary/media file)',
+      mimeType: f.mimeType,
+      preview: f.content
+        ? (f.content.length > 1200 ? f.content.substring(0, 1200) + '...' : f.content)
+        : f.base64
+          ? '(attached source file)'
+          : '(no readable content provided)',
     }));
 
     const prompt = `You are an expert Data Engineer and Machine Learning Information Extraction specialist.
@@ -74,39 +129,7 @@ Determine:
 
 Return strictly valid JSON adhering to the schema.`;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: prompt,
-      config: {
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            category: { type: Type.STRING },
-            spreadsheetTitle: { type: Type.STRING },
-            domainSummary: { type: Type.STRING },
-            columns: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  key: { type: Type.STRING },
-                  label: { type: Type.STRING },
-                  type: { type: Type.STRING },
-                  description: { type: Type.STRING },
-                  required: { type: Type.BOOLEAN },
-                },
-                required: ['key', 'label', 'type', 'description'],
-              },
-            },
-            extractionInstructions: { type: Type.STRING },
-          },
-          required: ['category', 'spreadsheetTitle', 'domainSummary', 'columns', 'extractionInstructions'],
-        },
-      },
-    });
-
-    const result = JSON.parse(response.text || '{}');
+    const result = await generateAiJson(prompt, getImageAttachments(files.slice(0, 5)));
     return res.json(result);
   } catch (error: any) {
     console.error('Error in detect-schema:', error);
@@ -165,35 +188,11 @@ Return strictly valid JSON with the format:
   "summary": "Document synopsis"
 }`;
 
-    let contentsPayload: any;
-
-    if (base64 && (mimeType?.startsWith('image/') || mimeType === 'application/pdf')) {
-      contentsPayload = {
-        parts: [
-          {
-            inlineData: {
-              data: base64,
-              mimeType: mimeType || 'image/png',
-            },
-          },
-          { text: promptText },
-        ],
-      };
-    } else {
-      // Text content (or textual fallback)
-      const textToAnalyze = content || `(File Name: ${name}, Path: ${relativePath})`;
-      contentsPayload = `${promptText}\n\n=== DOCUMENT CONTENT START ===\n${textToAnalyze}\n=== DOCUMENT CONTENT END ===`;
-    }
-
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: contentsPayload,
-      config: {
-        responseMimeType: 'application/json',
-      },
-    });
-
-    const parsed = JSON.parse(response.text || '{}');
+    const textToAnalyze = content || `(File Name: ${name}, Path: ${relativePath})`;
+    const parsed = await generateAiJson(
+      `${promptText}\n\n=== DOCUMENT CONTENT START ===\n${textToAnalyze}\n=== DOCUMENT CONTENT END ===`,
+      getImageAttachments([file])
+    );
     return res.json(parsed);
   } catch (error: any) {
     console.error('Error in extract-file:', error);
@@ -233,15 +232,7 @@ Return valid JSON with:
     const textToAnalyze = file.content || `(File: ${file.name})`;
     const contentsPayload = `${promptText}\n\n=== DOCUMENT CONTENT ===\n${textToAnalyze}`;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: contentsPayload,
-      config: {
-        responseMimeType: 'application/json',
-      },
-    });
-
-    const parsed = JSON.parse(response.text || '{}');
+    const parsed = await generateAiJson(contentsPayload, getImageAttachments([file]));
     return res.json(parsed);
   } catch (error: any) {
     console.error('Error in add-column-extract:', error);
@@ -279,67 +270,7 @@ Provide a thorough, data-driven interpretation of this consolidated dataset.
 
 Return strictly valid JSON adhering to the schema.`;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: prompt,
-      config: {
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            executiveSummary: { type: Type.STRING },
-            keyFindings: {
-              type: Type.ARRAY,
-              items: { type: Type.STRING },
-            },
-            metrics: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  label: { type: Type.STRING },
-                  value: { type: Type.STRING },
-                  change: { type: Type.STRING },
-                  trend: { type: Type.STRING },
-                },
-                required: ['label', 'value'],
-              },
-            },
-            workbookComparison: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  workbookName: { type: Type.STRING },
-                  rowCount: { type: Type.NUMBER },
-                  summary: { type: Type.STRING },
-                },
-                required: ['workbookName', 'rowCount', 'summary'],
-              },
-            },
-            anomalies: {
-              type: Type.ARRAY,
-              items: { type: Type.STRING },
-            },
-            recommendations: {
-              type: Type.ARRAY,
-              items: { type: Type.STRING },
-            },
-            dataQualityRating: { type: Type.NUMBER },
-          },
-          required: [
-            'executiveSummary',
-            'keyFindings',
-            'metrics',
-            'anomalies',
-            'recommendations',
-            'dataQualityRating',
-          ],
-        },
-      },
-    });
-
-    const parsed = JSON.parse(response.text || '{}');
+    const parsed = await generateAiJson(prompt);
     return res.json(parsed);
   } catch (error: any) {
     console.error('Error in interpret-data:', error);
@@ -378,12 +309,8 @@ Include specific numbers, calculations, percentages, and breakdowns whenever app
 If the data shows differences between workbooks or sheets, explicitly highlight them.
 Keep the formatting clean with bullet points and bold key figures.`;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: prompt,
-    });
-
-    return res.json({ answer: response.text });
+    const answer = await generateAiText(prompt);
+    return res.json({ answer });
   } catch (error: any) {
     console.error('Error in ask-data:', error);
     return res.status(500).json({ error: error?.message || 'Failed to answer query' });
@@ -421,15 +348,7 @@ Determine:
 
 Return strictly valid JSON.`;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: prompt,
-      config: {
-        responseMimeType: 'application/json',
-      },
-    });
-
-    const parsed = JSON.parse(response.text || '{}');
+    const parsed = await generateAiJson(prompt);
     return res.json(parsed);
   } catch (error: any) {
     console.error('Error in harmonize-workbooks:', error);
@@ -479,125 +398,25 @@ Adhere strictly to the requested schema:
 
 Return strictly valid JSON.`;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: prompt,
-      config: {
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            reportTitle: { type: Type.STRING },
-            generatedAt: { type: Type.STRING },
-            datasetSummary: {
-              type: Type.OBJECT,
-              properties: {
-                totalRows: { type: Type.NUMBER },
-                totalColumns: { type: Type.NUMBER },
-                domain: { type: Type.STRING },
-                healthScore: { type: Type.NUMBER },
-              },
-              required: ['totalRows', 'totalColumns', 'domain', 'healthScore'],
-            },
-            executiveSummary: { type: Type.STRING },
-            strategicInsights: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  title: { type: Type.STRING },
-                  description: { type: Type.STRING },
-                  impact: { type: Type.STRING },
-                },
-                required: ['title', 'description', 'impact'],
-              },
-            },
-            statisticalNarrative: { type: Type.STRING },
-            columnDeepDives: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  columnLabel: { type: Type.STRING },
-                  type: { type: Type.STRING },
-                  summary: { type: Type.STRING },
-                  patternObservation: { type: Type.STRING },
-                },
-                required: ['columnLabel', 'type', 'summary', 'patternObservation'],
-              },
-            },
-            riskAndAnomalies: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  issue: { type: Type.STRING },
-                  affectedColumns: {
-                    type: Type.ARRAY,
-                    items: { type: Type.STRING },
-                  },
-                  severity: { type: Type.STRING },
-                  recommendation: { type: Type.STRING },
-                },
-                required: ['issue', 'affectedColumns', 'severity', 'recommendation'],
-              },
-            },
-            actionableRecommendations: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  recommendation: { type: Type.STRING },
-                  category: { type: Type.STRING },
-                  priority: { type: Type.STRING },
-                },
-                required: ['recommendation', 'category', 'priority'],
-              },
-            },
-            conclusion: { type: Type.STRING },
-          },
-          required: [
-            'reportTitle',
-            'generatedAt',
-            'datasetSummary',
-            'executiveSummary',
-            'strategicInsights',
-            'statisticalNarrative',
-            'columnDeepDives',
-            'riskAndAnomalies',
-            'actionableRecommendations',
-            'conclusion',
-          ],
-        },
-      },
-    });
-
     let parsed: any = null;
     let attempts = 0;
 
     while (attempts < 3) {
       try {
         attempts++;
-        const response = await ai.models.generateContent({
-          model: 'gemini-3.8-flash',
-          contents: prompt,
-          config: {
-            responseMimeType: 'application/json',
-          },
-        });
-        parsed = JSON.parse(response.text || '{}');
+        parsed = await generateAiJson(prompt);
         if (parsed.reportTitle && parsed.executiveSummary) {
           break;
         }
-      } catch (geminiErr: any) {
-        console.warn(`Gemini attempt ${attempts} failed:`, geminiErr?.message);
+      } catch (aiError: any) {
+        console.warn(`AI provider attempt ${attempts} failed:`, aiError?.message);
         if (attempts < 3) {
           await new Promise((res) => setTimeout(res, 1200 * attempts));
         }
       }
     }
 
-    // If Gemini succeeded, return parsed report
+    // Return the generated report when the provider returns the required fields.
     if (parsed && parsed.reportTitle && parsed.executiveSummary) {
       return res.json(parsed);
     }
@@ -720,15 +539,7 @@ Return valid JSON:
   ]
 }`;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: prompt,
-      config: {
-        responseMimeType: 'application/json',
-      },
-    });
-
-    const parsed = JSON.parse(response.text || '{}');
+    const parsed = await generateAiJson(prompt);
     return res.json(parsed);
   } catch (error: any) {
     console.error('Error in clean-data-advisor:', error);

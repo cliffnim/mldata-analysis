@@ -1,6 +1,6 @@
 # ML Data Analysis & FolderML Workbook Consolidator
 
-A modern, machine-learning powered web application that consolidates, cleans, interprets, and analyzes complex multi-sheet Excel workbooks (`.xlsx`, `.xls`, `.csv`) and documents into structured master datasets, complete with statistical analytics and downloadable **PDF** and **DOCX** reports.
+A modern, machine-learning powered web application that consolidates, cleans, interprets, and analyzes Excel workbooks and supported business documents into structured datasets, complete with statistical analytics and downloadable **PDF** and **DOCX** reports.
 
 Live Demo on GitHub Pages: **[https://cliffnim.github.io/mldata-analysis/](https://cliffnim.github.io/mldata-analysis/)**
 
@@ -10,6 +10,7 @@ Live Demo on GitHub Pages: **[https://cliffnim.github.io/mldata-analysis/](https
 
 - 📁 **Universal Excel Ingestion**: Upload single workbooks or entire folders containing multiple `.xlsx`, `.xls`, and `.csv` files.
 - 🔗 **Automatic Multi-Workbook Consolidation**: Flattens and unifies disparate sheets into a harmonized master spreadsheet with automatic schema inference.
+- 📄 **Document Ingestion**: Extract structured fields from PDF files, DOCX documents, and JPG, PNG, WEBP, HEIC, or HEIF photos. DOCX and selectable PDF text are parsed in the browser; scanned PDF pages and photos use OpenAI-compatible vision models. Document extraction produces one record per file.
 - 🧹 **Automated Data Cleaner**:
   - Detects duplicate records, stray whitespaces, and missing values.
   - IQR-based statistical outlier identification.
@@ -46,11 +47,12 @@ Live Demo on GitHub Pages: **[https://cliffnim.github.io/mldata-analysis/](https
    npm install
    ```
 
-3. **(Optional) Configure environment variables:**
+3. **Configure an AI provider:**
    ```bash
    cp .env.example .env
-   # Add your GEMINI_API_KEY in .env if using server-side Gemini features
+   # Add a Kilo Gateway key to KILO_API_KEY
    ```
+   Kilo Gateway is the default provider. For OpenAI directly, set `AI_PROVIDER=openai`, `OPENAI_API_KEY`, and `AI_MODEL=gpt-5.4-mini`. For another OpenAI-compatible provider, set `AI_BASE_URL`, `AI_API_KEY`, and `AI_MODEL`. Spreadsheet parsing and basic statistics run locally; AI schema detection, extraction, interpretation, and reports require provider credentials.
 
 4. **Start the local server:**
    ```bash
@@ -80,9 +82,9 @@ This repository includes a preconfigured GitHub Actions workflow in `.github/wor
 ## 🛠️ Tech Stack
 
 - **Frontend**: React 19, TypeScript, Vite, Tailwind CSS v4, Lucide Icons, Motion
-- **Data Processing**: SheetJS (`xlsx`) for client-side workbook consolidation
+- **Data Processing**: SheetJS (`xlsx`) for client-side workbook consolidation; Mammoth for browser-side DOCX text extraction
 - **Document Export**: `docx` for Word documents, `jspdf` & `html2canvas-pro` for PDF rendering
-- **Backend**: Express (Node.js) with `@google/genai`
+- **Backend**: Express (Node.js) with the OpenAI SDK and Kilo Gateway by default
 - **Offline / Static Engine**: Built-in client statistical engine for zero-server GitHub Pages execution
 
 ---

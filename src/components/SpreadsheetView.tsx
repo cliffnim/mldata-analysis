@@ -35,6 +35,8 @@ interface SpreadsheetViewProps {
   files: FolderFile[];
   onUpdateCell: (rowId: string, colKey: string, newValue: any) => void;
   onDeleteRow: (rowId: string) => void;
+  onRemoveRows: (rowIds: string[]) => void;
+  onDeleteColumn: (colKey: string) => void;
   onInspectRow: (row: ExtractedRow) => void;
   onOpenSchemaEditor: () => void;
   onOpenAddColumn: () => void;
@@ -54,6 +56,8 @@ export const SpreadsheetView: React.FC<SpreadsheetViewProps> = ({
   files,
   onUpdateCell,
   onDeleteRow,
+  onRemoveRows,
+  onDeleteColumn,
   onInspectRow,
   onOpenSchemaEditor,
   onOpenAddColumn,
@@ -66,6 +70,8 @@ export const SpreadsheetView: React.FC<SpreadsheetViewProps> = ({
   extractedCount,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
+  const [columnFilterKey, setColumnFilterKey] = useState('');
+  const [columnFilterValue, setColumnFilterValue] = useState('');
   const [filterMode, setFilterMode] = useState<'all' | 'high_conf' | 'review' | 'anomalies'>('all');
   const [folderFilter, setFolderFilter] = useState<string>('all');
   const [sortKey, setSortKey] = useState<string | null>(null);
@@ -88,31 +94,17 @@ export const SpreadsheetView: React.FC<SpreadsheetViewProps> = ({
   // Aggregate Metrics & Sums
   const stats = useMemo(() => {
     if (rows.length === 0) {
-      return { totalRows: 0, avgConfidence: 0, anomalyCount: 0, numericTotals: {} };
+      return { totalRows: 0, avgConfidence: 0, anomalyCount: 0 };
     }
 
     const totalConfidence = rows.reduce((sum, r) => sum + (r.overallConfidence || 0), 0);
     const avgConfidence = Math.round(totalConfidence / rows.length);
     const anomalyCount = rows.filter((r) => r.anomalies && r.anomalies.length > 0).length;
 
-    // Calculate sum for numeric or currency columns
-    const numericTotals: Record<string, number> = {};
-    columns.forEach((col) => {
-      if (col.type === 'currency' || col.type === 'number') {
-        const sum = rows.reduce((acc, r) => {
-          const val = r.data[col.key];
-          const num = typeof val === 'number' ? val : parseFloat(val);
-          return acc + (isNaN(num) ? 0 : num);
-        }, 0);
-        numericTotals[col.key] = sum;
-      }
-    });
-
     return {
       totalRows: rows.length,
       avgConfidence,
       anomalyCount,
-      numericTotals,
     };
   }, [rows, columns]);
 
@@ -128,6 +120,11 @@ export const SpreadsheetView: React.FC<SpreadsheetViewProps> = ({
           String(val).toLowerCase().includes(query)
         );
         if (!matchesName && !matchesPath && !matchesData) return false;
+      }
+
+      if (columnFilterKey && columnFilterValue.trim()) {
+        const value = String(row.data[columnFilterKey] ?? '').toLowerCase();
+        if (!value.includes(columnFilterValue.trim().toLowerCase())) return false;
       }
 
       // Filter by confidence / anomalies
@@ -158,7 +155,35 @@ export const SpreadsheetView: React.FC<SpreadsheetViewProps> = ({
         ? String(valA).localeCompare(String(valB))
         : String(valB).localeCompare(String(valA));
     });
-  }, [rows, searchQuery, filterMode, folderFilter, sortKey, sortDirection]);
+  }, [rows, searchQuery, columnFilterKey, columnFilterValue, filterMode, folderFilter, sortKey, sortDirection]);
+
+  const visibleNumericTotals = useMemo(() => {
+    const totals: Record<string, number> = {};
+    columns.forEach((column) => {
+      if (column.type !== 'currency' && column.type !== 'number') return;
+      totals[column.key] = filteredRows.reduce((sum, row) => {
+        const value = row.data[column.key];
+        const number = typeof value === 'number' ? value : parseFloat(String(value ?? '').replace(/[$,€£%\s]/g, ''));
+        return sum + (Number.isFinite(number) ? number : 0);
+      }, 0);
+    });
+    return totals;
+  }, [filteredRows, columns]);
+
+  const hasActiveFilter = Boolean(
+    searchQuery.trim() ||
+    (columnFilterKey && columnFilterValue.trim()) ||
+    filterMode !== 'all' ||
+    folderFilter !== 'all'
+  );
+
+  const getRowSum = (row: ExtractedRow) =>
+    columns.reduce((sum, column) => {
+      if (column.type !== 'number' && column.type !== 'currency') return sum;
+      const value = row.data[column.key];
+      const number = typeof value === 'number' ? value : parseFloat(String(value ?? '').replace(/[$,€£%\s]/g, ''));
+      return sum + (Number.isFinite(number) ? number : 0);
+    }, 0);
 
   const handleSort = (key: string) => {
     if (sortKey === key) {
@@ -279,7 +304,7 @@ export const SpreadsheetView: React.FC<SpreadsheetViewProps> = ({
         </div>
 
         {/* Dynamic Aggregated Value (e.g. Total Amount sum if present) */}
-        {Object.entries(stats.numericTotals).slice(0, 2).map(([colKey, sum]) => {
+        {Object.entries(visibleNumericTotals).map(([colKey, sum]) => {
           const colDef = columns.find((c) => c.key === colKey);
           return (
             <div key={colKey} className="bg-slate-900 border border-slate-800 rounded-xl p-3.5 flex flex-col justify-between">
@@ -312,6 +337,27 @@ export const SpreadsheetView: React.FC<SpreadsheetViewProps> = ({
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="w-full bg-slate-800/90 border border-slate-700/80 rounded-lg pl-8 pr-3 py-1.5 text-xs text-white placeholder-slate-400 focus:outline-none focus:border-teal-500 transition-colors"
+            />
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            <select
+              aria-label="Filter by column"
+              value={columnFilterKey}
+              onChange={(event) => setColumnFilterKey(event.target.value)}
+              className="bg-slate-800 border border-slate-700 text-xs text-slate-300 rounded-lg px-2 py-1.5 focus:outline-none focus:border-teal-500"
+            >
+              <option value="">All columns</option>
+              {columns.map((column) => <option key={column.key} value={column.key}>{column.label}</option>)}
+            </select>
+            <input
+              type="text"
+              aria-label="Filter column values"
+              placeholder="Contains..."
+              value={columnFilterValue}
+              onChange={(event) => setColumnFilterValue(event.target.value)}
+              disabled={!columnFilterKey}
+              className="w-28 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-white placeholder-slate-400 focus:outline-none focus:border-teal-500 disabled:opacity-50"
             />
           </div>
 
@@ -367,6 +413,20 @@ export const SpreadsheetView: React.FC<SpreadsheetViewProps> = ({
 
         {/* Right: Column customization & Export */}
         <div className="flex items-center space-x-2">
+          {hasActiveFilter && filteredRows.length > 0 && (
+            <button
+              onClick={() => {
+                if (window.confirm(`Remove ${filteredRows.length} matching rows from this dataset?`)) {
+                  onRemoveRows(filteredRows.map((row) => row.id));
+                }
+              }}
+              className="px-2.5 py-1.5 rounded-lg text-xs font-medium bg-rose-950/70 hover:bg-rose-900 text-rose-300 border border-rose-800 flex items-center space-x-1.5 transition-colors"
+              title="Permanently remove the rows matching the current filters"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>Remove {filteredRows.length} matching</span>
+            </button>
+          )}
           <button
             onClick={onOpenAddColumn}
             className="px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 flex items-center space-x-1.5 transition-colors"
@@ -460,21 +520,37 @@ export const SpreadsheetView: React.FC<SpreadsheetViewProps> = ({
                       key={col.key}
                       className="py-3 px-3.5 min-w-[150px] border-r border-slate-800"
                     >
-                      <button
-                        onClick={() => handleSort(col.key)}
-                        className="flex items-center space-x-1.5 hover:text-white transition-colors group"
-                        title={col.description}
-                      >
-                        {getColumnIcon(col.type)}
-                        <span className="truncate max-w-[140px]">{col.label}</span>
-                        {sortKey === col.key ? (
-                          sortDirection === 'asc' ? <ArrowUp className="w-3 h-3 text-teal-400" /> : <ArrowDown className="w-3 h-3 text-teal-400" />
-                        ) : (
-                          <ArrowUpDown className="w-3 h-3 text-slate-400 group-hover:text-slate-400" />
-                        )}
-                      </button>
+                      <div className="flex items-center justify-between gap-2">
+                        <button
+                          onClick={() => handleSort(col.key)}
+                          className="flex min-w-0 items-center space-x-1.5 hover:text-white transition-colors group"
+                          title={col.description}
+                        >
+                          {getColumnIcon(col.type)}
+                          <span className="truncate max-w-[140px]">{col.label}</span>
+                          {sortKey === col.key ? (
+                            sortDirection === 'asc' ? <ArrowUp className="w-3 h-3 text-teal-400" /> : <ArrowDown className="w-3 h-3 text-teal-400" />
+                          ) : (
+                            <ArrowUpDown className="w-3 h-3 text-slate-400 group-hover:text-slate-400" />
+                          )}
+                        </button>
+                        <button
+                          onClick={() => {
+                            if (window.confirm(`Remove the "${col.label}" column from this dataset and future analysis?`)) {
+                              onDeleteColumn(col.key);
+                            }
+                          }}
+                          className="p-1 text-slate-400 hover:text-rose-400 transition-colors"
+                          title={`Remove ${col.label} column`}
+                          aria-label={`Remove ${col.label} column`}
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      </div>
                     </th>
                   ))}
+
+                  <th className="py-3 px-3 min-w-[110px] text-right" title="Sum of numeric and currency cells in the row">Row sum</th>
 
                   {/* Action Column */}
                   <th className="py-3 px-3 w-20 text-center">Actions</th>
@@ -600,6 +676,10 @@ export const SpreadsheetView: React.FC<SpreadsheetViewProps> = ({
                         );
                       })}
 
+                      <td className="py-2.5 px-3 text-right font-semibold text-teal-300" title="Sum of numeric and currency cells; verify units before using">
+                        {getRowSum(row).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                      </td>
+
                       {/* Row Action Buttons */}
                       <td className="py-2 px-2 border-slate-800 text-center">
                         <div className="flex items-center justify-center space-x-1 opacity-60 group-hover:opacity-100 transition-opacity">
@@ -637,6 +717,11 @@ export const SpreadsheetView: React.FC<SpreadsheetViewProps> = ({
             {searchQuery && (
               <span className="bg-slate-800 text-teal-300 px-2 py-0.5 rounded">
                 Filtered by: "{searchQuery}"
+              </span>
+            )}
+            {columnFilterKey && columnFilterValue.trim() && (
+              <span className="bg-slate-800 text-teal-300 px-2 py-0.5 rounded">
+                {columns.find((column) => column.key === columnFilterKey)?.label} contains "{columnFilterValue}"
               </span>
             )}
             <span className="text-slate-400 hidden sm:inline">

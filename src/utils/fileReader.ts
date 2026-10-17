@@ -1,5 +1,32 @@
 import * as XLSX from 'xlsx';
+import * as mammoth from 'mammoth';
+import * as pdfjsLib from 'pdfjs-dist';
+import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { FolderFile, ExcelSheetInfo, WorkbookData } from '../types';
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
+
+const getMimeType = (file: File): string => {
+  if (file.type && file.type !== 'application/octet-stream') return file.type;
+
+  const extension = file.name.split('.').pop()?.toLowerCase();
+  const mimeTypes: Record<string, string> = {
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    pdf: 'application/pdf',
+    bmp: 'image/bmp',
+    gif: 'image/gif',
+    heic: 'image/heic',
+    heif: 'image/heif',
+    jpeg: 'image/jpeg',
+    jpg: 'image/jpeg',
+    png: 'image/png',
+    tif: 'image/tiff',
+    tiff: 'image/tiff',
+    webp: 'image/webp',
+  };
+
+  return mimeTypes[extension || ''] || 'application/octet-stream';
+};
 
 /**
  * Check if a file is an Excel spreadsheet or tabular workbook
@@ -33,6 +60,9 @@ export async function readFileAsync(file: File, relativePath?: string): Promise<
   const path = relativePath || (file as any).webkitRelativePath || file.name;
   const isExcel = isExcelFile(file.name);
   const isText = isTextFile(file);
+  const isDocx = file.name.toLowerCase().endsWith('.docx');
+  const mimeType = getMimeType(file);
+  const isPdf = mimeType === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
 
   return new Promise((resolve) => {
     const reader = new FileReader();
@@ -114,6 +144,119 @@ export async function readFileAsync(file: File, relativePath?: string): Promise<
       };
 
       reader.readAsArrayBuffer(file);
+    } else if (isPdf) {
+      reader.onload = async (event) => {
+        try {
+          const buffer = event.target?.result as ArrayBuffer;
+          const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
+          const pageText: string[] = [];
+
+          for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
+            const page = await pdf.getPage(pageNumber);
+            const text = await page.getTextContent();
+            const pageContent = text.items.map((item) => 'str' in item ? item.str : '').join(' ').trim();
+            if (pageContent) pageText.push(`Page ${pageNumber}:\n${pageContent}`);
+          }
+
+          const content = pageText.join('\n\n');
+          const attachments: { mimeType: string; base64: string }[] = [];
+
+          if (content.replace(/\s/g, '').length < 20) {
+            for (let pageNumber = 1; pageNumber <= Math.min(pdf.numPages, 5); pageNumber++) {
+              const page = await pdf.getPage(pageNumber);
+              const originalViewport = page.getViewport({ scale: 1 });
+              const scale = Math.min(1.5, 1600 / originalViewport.width);
+              const viewport = page.getViewport({ scale });
+              const canvas = document.createElement('canvas');
+              const context = canvas.getContext('2d');
+              if (!context) continue;
+              canvas.width = Math.ceil(viewport.width);
+              canvas.height = Math.ceil(viewport.height);
+              await page.render({ canvas, canvasContext: context, viewport }).promise;
+              const base64 = canvas.toDataURL('image/jpeg', 0.78).split(',')[1];
+              if (base64) attachments.push({ mimeType: 'image/jpeg', base64 });
+            }
+          }
+
+          resolve({
+            id: 'file_' + Math.random().toString(36).substring(2, 9),
+            name: file.name,
+            relativePath: path,
+            size: file.size,
+            mimeType,
+            fileCategory: 'document',
+            content: content || (attachments.length ? 'Scanned PDF pages attached as images.' : ''),
+            attachments,
+            status: 'idle',
+          });
+        } catch (err: any) {
+          resolve({
+            id: 'file_' + Math.random().toString(36).substring(2, 9),
+            name: file.name,
+            relativePath: path,
+            size: file.size,
+            mimeType,
+            fileCategory: 'document',
+            status: 'error',
+            errorMessage: `Could not read PDF: ${err.message || 'Invalid PDF file'}`,
+          });
+        }
+      };
+      reader.onerror = () => {
+        resolve({
+          id: 'file_' + Math.random().toString(36).substring(2, 9),
+          name: file.name,
+          relativePath: path,
+          size: file.size,
+          mimeType,
+          fileCategory: 'document',
+          status: 'error',
+          errorMessage: 'Failed to read PDF',
+        });
+      };
+      reader.readAsArrayBuffer(file);
+    } else if (isDocx) {
+      reader.onload = async (event) => {
+        try {
+          const buffer = event.target?.result as ArrayBuffer;
+          const extracted = await mammoth.extractRawText({ arrayBuffer: buffer });
+          resolve({
+            id: 'file_' + Math.random().toString(36).substring(2, 9),
+            name: file.name,
+            relativePath: path,
+            size: file.size,
+            mimeType,
+            fileCategory: 'document',
+            content: extracted.value,
+            status: 'idle',
+          });
+        } catch (err: any) {
+          resolve({
+            id: 'file_' + Math.random().toString(36).substring(2, 9),
+            name: file.name,
+            relativePath: path,
+            size: file.size,
+            mimeType,
+            fileCategory: 'document',
+            content: '',
+            status: 'error',
+            errorMessage: `Could not read Word document: ${err.message || 'Invalid DOCX file'}`,
+          });
+        }
+      };
+      reader.onerror = () => {
+        resolve({
+          id: 'file_' + Math.random().toString(36).substring(2, 9),
+          name: file.name,
+          relativePath: path,
+          size: file.size,
+          mimeType,
+          fileCategory: 'document',
+          status: 'error',
+          errorMessage: 'Failed to read Word document',
+        });
+      };
+      reader.readAsArrayBuffer(file);
     } else if (isText) {
       // Plain text, logs, JSON, markdown
       reader.onload = () => {
@@ -122,7 +265,7 @@ export async function readFileAsync(file: File, relativePath?: string): Promise<
           name: file.name,
           relativePath: path,
           size: file.size,
-          mimeType: file.type || 'text/plain',
+          mimeType: mimeType || 'text/plain',
           fileCategory: 'text',
           content: reader.result as string,
           status: 'idle',
@@ -134,7 +277,7 @@ export async function readFileAsync(file: File, relativePath?: string): Promise<
           name: file.name,
           relativePath: path,
           size: file.size,
-          mimeType: file.type || 'text/plain',
+          mimeType: mimeType || 'text/plain',
           content: `(Could not read file: ${file.name})`,
           status: 'error',
           errorMessage: 'Failed to read file',
@@ -143,16 +286,71 @@ export async function readFileAsync(file: File, relativePath?: string): Promise<
       reader.readAsText(file);
     } else {
       // Binary / Image / PDF
-      reader.onload = () => {
+      reader.onload = async () => {
         const result = reader.result as string;
         const base64Data = result.includes(',') ? result.split(',')[1] : result;
+
+        if (mimeType.startsWith('image/')) {
+          try {
+            const image = await createImageBitmap(file);
+            const scale = Math.min(1, 1800 / Math.max(image.width, image.height));
+            const canvas = document.createElement('canvas');
+            canvas.width = Math.max(1, Math.round(image.width * scale));
+            canvas.height = Math.max(1, Math.round(image.height * scale));
+            const context = canvas.getContext('2d');
+            if (!context) throw new Error('Image conversion is unavailable in this browser.');
+            context.fillStyle = '#ffffff';
+            context.fillRect(0, 0, canvas.width, canvas.height);
+            context.drawImage(image, 0, 0, canvas.width, canvas.height);
+            image.close();
+            const jpegBase64 = canvas.toDataURL('image/jpeg', 0.82).split(',')[1];
+            resolve({
+              id: 'file_' + Math.random().toString(36).substring(2, 9),
+              name: file.name,
+              relativePath: path,
+              size: file.size,
+              mimeType,
+              fileCategory: 'image',
+              attachments: [{ mimeType: 'image/jpeg', base64: jpegBase64 }],
+              status: 'idle',
+            });
+            return;
+          } catch (err: any) {
+            if (!['image/jpeg', 'image/png', 'image/webp'].includes(mimeType)) {
+              resolve({
+                id: 'file_' + Math.random().toString(36).substring(2, 9),
+                name: file.name,
+                relativePath: path,
+                size: file.size,
+                mimeType,
+                fileCategory: 'image',
+                status: 'error',
+                errorMessage: `Could not convert this photo in the browser. Try JPG, PNG, or WEBP. ${err.message || ''}`.trim(),
+              });
+              return;
+            }
+          }
+
+          resolve({
+            id: 'file_' + Math.random().toString(36).substring(2, 9),
+            name: file.name,
+            relativePath: path,
+            size: file.size,
+            mimeType,
+            fileCategory: 'image',
+            attachments: [{ mimeType, base64: base64Data }],
+            status: 'idle',
+          });
+          return;
+        }
+
         resolve({
           id: 'file_' + Math.random().toString(36).substring(2, 9),
           name: file.name,
           relativePath: path,
           size: file.size,
-          mimeType: file.type || 'application/octet-stream',
-          fileCategory: file.type.startsWith('image/') ? 'image' : 'document',
+          mimeType,
+          fileCategory: 'document',
           base64: base64Data,
           status: 'idle',
         });
@@ -163,7 +361,7 @@ export async function readFileAsync(file: File, relativePath?: string): Promise<
           name: file.name,
           relativePath: path,
           size: file.size,
-          mimeType: file.type || 'application/octet-stream',
+          mimeType,
           status: 'error',
           errorMessage: 'Failed to read media/binary file',
         });

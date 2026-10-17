@@ -194,7 +194,7 @@ export const FolderUploaderModal: React.FC<FolderUploaderModalProps> = ({
               Drag & Drop your Folder or Excel Files here
             </h3>
             <p className="text-xs text-slate-400 max-w-md mx-auto mb-5 leading-relaxed">
-              Supports Excel workbooks (<span className="text-teal-400 font-mono">.xlsx, .xls, .xlsm, .csv</span>) and documents. Multi-sheet workbooks will have all sheets extracted and combined.
+              Supports Excel/CSV, PDF, DOCX, text files, and photos (JPG, PNG, WEBP, HEIC). Multi-sheet workbooks are combined.
             </p>
 
             {loading ? (
@@ -220,7 +220,7 @@ export const FolderUploaderModal: React.FC<FolderUploaderModalProps> = ({
                   ref={filesInputRef}
                   onChange={handleFilesChange}
                   multiple
-                  accept=".xlsx,.xls,.xlsm,.csv,.tsv,.txt,.json,.pdf,.doc,.docx"
+                  accept=".xlsx,.xls,.xlsm,.xlsb,.csv,.tsv,.txt,.json,.md,.pdf,.docx,.png,.jpg,.jpeg,.webp,.heic,.heif"
                   className="hidden"
                 />
 

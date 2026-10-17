@@ -32,6 +32,11 @@ export interface WorkbookData {
   totalRows: number;
 }
 
+export interface FileAttachment {
+  mimeType: string;
+  base64: string;
+}
+
 export interface FolderFile {
   id: string;
   name: string;
@@ -40,6 +45,7 @@ export interface FolderFile {
   mimeType: string;
   content?: string;
   base64?: string;
+  attachments?: FileAttachment[];
   workbookData?: WorkbookData;
   fileCategory?: 'excel' | 'document' | 'image' | 'text';
   status: 'idle' | 'extracting' | 'completed' | 'error';
