@@ -1,0 +1,6 @@
+{
+  "name": "FolderML - Folder Data Extractor to Spreadsheet",
+  "description": "Machine learning powered folder processor that automatically extracts unstructured and semi-structured documents into organized, verified spreadsheet format.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
