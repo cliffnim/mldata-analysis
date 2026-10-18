@@ -25,7 +25,13 @@ interface DataCleanerViewProps {
   onUpdateRows: (updatedRows: ExtractedRow[], historyItem: CleanHistoryItem) => void;
   cleanHistory: CleanHistoryItem[];
   onRevertLastClean: () => void;
+  onResetCleaning: () => void;
   onNavigateToTab: (tab: any) => void;
+}
+
+interface PendingCleanPreview {
+  rows: ExtractedRow[];
+  historyItem: CleanHistoryItem;
 }
 
 export const DataCleanerView: React.FC<DataCleanerViewProps> = ({
@@ -34,6 +40,7 @@ export const DataCleanerView: React.FC<DataCleanerViewProps> = ({
   onUpdateRows,
   cleanHistory,
   onRevertLastClean,
+  onResetCleaning,
   onNavigateToTab,
 }) => {
   const [selectedColumn, setSelectedColumn] = useState<string>('all');
@@ -41,6 +48,17 @@ export const DataCleanerView: React.FC<DataCleanerViewProps> = ({
   const [casingOption, setCasingOption] = useState<'title' | 'upper' | 'lower'>('title');
   const [advisorSuggestions, setAdvisorSuggestions] = useState<{ title: string; reason: string; priority: string }[]>([]);
   const [isLoadingAdvisor, setIsLoadingAdvisor] = useState(false);
+  const [pendingPreview, setPendingPreview] = useState<PendingCleanPreview | null>(null);
+
+  const stagePreview = (previewRows: ExtractedRow[], historyItem: CleanHistoryItem) => {
+    setPendingPreview({ rows: previewRows, historyItem });
+  };
+
+  const applyPreview = () => {
+    if (!pendingPreview) return;
+    onUpdateRows(pendingPreview.rows, pendingPreview.historyItem);
+    setPendingPreview(null);
+  };
 
   // Compute Data Health Audit in real time
   const audit: DataCleanAudit = useMemo(() => {
@@ -275,7 +293,7 @@ export const DataCleanerView: React.FC<DataCleanerViewProps> = ({
       });
     });
 
-    onUpdateRows(cleanedRows, {
+    stagePreview(cleanedRows, {
       id: 'clean_' + Date.now(),
       action: '1-Click Master Auto-Clean',
       details: `Normalized whitespace, parsed numbers, deduplicated ${rows.length - cleanedRows.length} rows, and imputed empty cells.`,
@@ -298,7 +316,7 @@ export const DataCleanerView: React.FC<DataCleanerViewProps> = ({
     });
 
     const removed = rows.length - uniqueRows.length;
-    onUpdateRows(uniqueRows, {
+    stagePreview(uniqueRows, {
       id: 'dedup_' + Date.now(),
       action: 'Remove Duplicates',
       details: `Removed ${removed} exact duplicate row(s).`,
@@ -324,7 +342,7 @@ export const DataCleanerView: React.FC<DataCleanerViewProps> = ({
       return { ...r, data: updated };
     });
 
-    onUpdateRows(cleanedRows, {
+    stagePreview(cleanedRows, {
       id: 'trim_' + Date.now(),
       action: 'Trim Whitespace',
       details: `Trimmed leading and trailing spaces across ${count} cell(s).`,
@@ -360,7 +378,7 @@ export const DataCleanerView: React.FC<DataCleanerViewProps> = ({
       return { ...r, data: updated };
     });
 
-    onUpdateRows(cleanedRows, {
+    stagePreview(cleanedRows, {
       id: 'casing_' + Date.now(),
       action: `Standardize Casing (${casingOption.toUpperCase()})`,
       details: `Converted ${count} text values to ${casingOption} case.`,
@@ -425,7 +443,7 @@ export const DataCleanerView: React.FC<DataCleanerViewProps> = ({
       return { ...r, data: updated };
     });
 
-    onUpdateRows(cleanedRows, {
+    stagePreview(cleanedRows, {
       id: 'fill_' + Date.now(),
       action: `Fill Missing Values (${fillValueOption})`,
       details: `Imputed ${count} missing cell(s) using ${fillValueOption}.`,
@@ -447,7 +465,7 @@ export const DataCleanerView: React.FC<DataCleanerViewProps> = ({
     });
 
     const droppedCount = initialCount - filteredRows.length;
-    onUpdateRows(filteredRows, {
+    stagePreview(filteredRows, {
       id: 'drop_' + Date.now(),
       action: 'Drop Incomplete Rows',
       details: `Dropped ${droppedCount} row(s) with missing required fields.`,
@@ -498,7 +516,34 @@ export const DataCleanerView: React.FC<DataCleanerViewProps> = ({
         </div>
 
         {/* Master 1-Click Clean CTA */}
-        <div className="flex items-center space-x-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <span role="status" className="text-[11px] text-slate-300">
+            {cleanHistory.length > 0 ? 'Cleaned data active' : 'Imported data active'}
+          </span>
+          {pendingPreview && (
+            <>
+              <button
+                onClick={applyPreview}
+                className="px-3.5 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white border border-teal-500 text-xs font-semibold"
+              >
+                Apply Preview
+              </button>
+              <button
+                onClick={() => setPendingPreview(null)}
+                className="px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-xs font-medium"
+              >
+                Discard Preview
+              </button>
+            </>
+          )}
+          {cleanHistory.length > 0 && (
+            <button
+              onClick={onResetCleaning}
+              className="px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 text-xs font-medium"
+            >
+              Reset to Imported Data
+            </button>
+          )}
           {cleanHistory.length > 0 && (
             <button
               onClick={onRevertLastClean}
@@ -520,6 +565,56 @@ export const DataCleanerView: React.FC<DataCleanerViewProps> = ({
           </button>
         </div>
       </div>
+
+      {pendingPreview && (
+        <section aria-label="Cleaning preview" className="rounded-xl border border-teal-800 bg-slate-900 p-5 shadow-sm space-y-3">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-semibold text-white">Preview: {pendingPreview.historyItem.action}</h3>
+              <p className="mt-1 text-xs text-slate-300">{pendingPreview.historyItem.details}</p>
+              <p className="mt-1 text-[11px] text-teal-300">Preview only. Current data and analysis remain unchanged until you apply it.</p>
+            </div>
+            <span className="text-xs text-slate-300">Rows: {rows.length} → {pendingPreview.rows.length}</span>
+          </div>
+          <div className="overflow-x-auto rounded-lg border border-slate-800">
+            <table className="w-full text-left text-[11px]">
+              <thead className="bg-slate-950 text-slate-400">
+                <tr>
+                  <th rowSpan={2} className="px-3 py-2">Source row</th>
+                  {columns.slice(0, 4).map((column) => (
+                    <th key={column.key} colSpan={2} className="px-3 py-2 text-center">{column.label}</th>
+                  ))}
+                </tr>
+                <tr>
+                  {columns.slice(0, 4).flatMap((column) => [
+                    <th key={`${column.key}-current`} className="px-3 py-1">Current</th>,
+                    <th key={`${column.key}-preview`} className="px-3 py-1">Preview</th>,
+                  ])}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800 text-slate-300">
+                {rows.slice(0, 4).map((row) => {
+                  const previewRow = pendingPreview.rows.find((candidate) => candidate.id === row.id);
+                  return (
+                    <tr key={row.id}>
+                      <td className="max-w-40 truncate px-3 py-2" title={row.fileName}>{row.fileName}</td>
+                      {columns.slice(0, 4).flatMap((column) => [
+                        <td key={`${row.id}-${column.key}-current`} className="max-w-40 truncate px-3 py-2">
+                          {String(row.data[column.key] ?? '—')}
+                        </td>,
+                        <td key={`${row.id}-${column.key}-preview`} className="max-w-40 truncate px-3 py-2 text-teal-200">
+                          {previewRow ? String(previewRow.data[column.key] ?? '—') : 'Row removed'}
+                        </td>,
+                      ])}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          {rows.length > 4 && <p className="text-[10px] text-slate-500">Showing the first 4 current rows.</p>}
+        </section>
+      )}
 
       {/* Hygiene Audit Metrics Cards */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">

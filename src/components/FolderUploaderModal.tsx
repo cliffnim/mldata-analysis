@@ -11,7 +11,7 @@ import {
   Folder,
   Layers,
 } from 'lucide-react';
-import { FolderFile } from '../types';
+import { FolderFile, UrlFetchRequest, UrlFetchResponse } from '../types';
 import { readFileAsync, getFilesFromEntry } from '../utils/fileReader';
 import { SAMPLE_FOLDERS } from '../data/sampleFolders';
 
@@ -31,6 +31,9 @@ export const FolderUploaderModal: React.FC<FolderUploaderModalProps> = ({
   const [isDragging, setIsDragging] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [url, setUrl] = useState('');
+  const [isFetchingUrl, setIsFetchingUrl] = useState(false);
+  const [fetchedPage, setFetchedPage] = useState<UrlFetchResponse | null>(null);
   const [showPresets, setShowPresets] = useState(false);
   const folderInputRef = useRef<HTMLInputElement>(null);
   const filesInputRef = useRef<HTMLInputElement>(null);
@@ -100,6 +103,91 @@ export const FolderUploaderModal: React.FC<FolderUploaderModalProps> = ({
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleFetchUrl = async () => {
+    const trimmed = url.trim();
+    if (!trimmed) {
+      setError('Enter a public web-page URL.');
+      setFetchedPage(null);
+      return;
+    }
+
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(trimmed);
+    } catch {
+      setError('Enter a valid URL starting with http:// or https://.');
+      setFetchedPage(null);
+      return;
+    }
+    if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+      setError('Only public HTTP and HTTPS web pages are supported.');
+      setFetchedPage(null);
+      return;
+    }
+
+    setError(null);
+    setFetchedPage(null);
+    setIsFetchingUrl(true);
+    try {
+      const request: UrlFetchRequest = { url: trimmed };
+      const res = await fetch('/api/fetch-url', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      });
+      const data = await res.json().catch(() => ({})) as Partial<UrlFetchResponse> & { error?: string };
+      if (!res.ok) {
+        const message = data.error || (res.status === 413
+          ? 'The page response is larger than the 2 MB limit.'
+          : res.status === 504
+            ? 'The page request timed out. Try again later.'
+            : res.status >= 500
+              ? 'The page could not be fetched because the website returned an error.'
+              : 'The URL was rejected. Check that it is a public HTTP or HTTPS page.');
+        throw new Error(message);
+      }
+      if (typeof data.url !== 'string' || typeof data.text !== 'string') {
+        throw new Error('The server returned an invalid page response.');
+      }
+      setFetchedPage({
+        url: data.url,
+        contentType: typeof data.contentType === 'string' ? data.contentType : '',
+        text: data.text.trim(),
+        truncated: data.truncated === true,
+      });
+    } catch (err: unknown) {
+      console.warn('URL extraction failed:', err);
+      setError(err instanceof Error ? err.message : 'The page could not be fetched.');
+    } finally {
+      setIsFetchingUrl(false);
+    }
+  };
+
+  const handleUseFetchedPage = () => {
+    if (!fetchedPage) return;
+    const text = fetchedPage.text;
+    let hostname = fetchedPage.url;
+    try {
+      hostname = new URL(fetchedPage.url).hostname;
+    } catch {
+      // The endpoint supplies the final validated URL; keep it as the display name if parsing fails.
+    }
+      const file: FolderFile = {
+        id: 'file_' + Math.random().toString(36).substring(2, 9),
+        name: hostname || fetchedPage.url,
+        relativePath: fetchedPage.url,
+        size: text.length,
+        mimeType: 'text/html',
+        fileCategory: 'document',
+        content: text,
+        status: 'idle',
+      };
+      onFilesLoaded('Web Page', [file]);
+      setUrl('');
+      setFetchedPage(null);
+      onClose();
   };
 
   const handleDirectoryChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -175,6 +263,78 @@ export const FolderUploaderModal: React.FC<FolderUploaderModalProps> = ({
             </div>
           )}
 
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (!isFetchingUrl) void handleFetchUrl();
+            }}
+            className="space-y-3"
+          >
+            <label htmlFor="web-page-url" className="block text-xs font-semibold text-slate-200">
+              Import a public web page
+            </label>
+            <div className="flex gap-2">
+              <input
+                id="web-page-url"
+                type="url"
+                value={url}
+                onChange={(e) => {
+                  setUrl(e.target.value);
+                  setError(null);
+                  setFetchedPage(null);
+                }}
+                placeholder="https://example.com/page"
+                className="flex-1 rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-100"
+                disabled={isFetchingUrl}
+                aria-describedby="web-page-url-help"
+              />
+              <button
+                type="submit"
+                disabled={isFetchingUrl || !url.trim()}
+                className="rounded-lg bg-blue-600 px-4 py-2 text-sm text-white disabled:opacity-50"
+              >
+                {isFetchingUrl ? 'Fetching...' : 'Fetch URL'}
+              </button>
+            </div>
+            <p id="web-page-url-help" className="text-[11px] text-slate-400">
+              Only public HTTP and HTTPS pages are fetched. Private network addresses are blocked.
+            </p>
+            {isFetchingUrl && (
+              <p role="status" className="text-xs text-teal-300">Fetching the page and extracting readable text...</p>
+            )}
+            {error && (
+              <div role="alert" className="rounded-lg border border-rose-800 bg-rose-950/40 px-3 py-2 text-xs text-rose-200">
+                {error}
+              </div>
+            )}
+            {fetchedPage && (
+              <div role="status" className="space-y-2 rounded-lg border border-emerald-800 bg-emerald-950/30 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="text-xs font-semibold text-emerald-200">Page text extracted</p>
+                    <p className="text-[11px] text-slate-400">{fetchedPage.url}{fetchedPage.contentType ? ` • ${fetchedPage.contentType}` : ''}</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleUseFetchedPage}
+                    className="rounded-lg bg-emerald-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-600"
+                  >
+                    Continue to analysis
+                  </button>
+                </div>
+                {!fetchedPage.text && (
+                  <p className="text-xs text-amber-200">The page returned little or no extractable text. Analysis may not be able to infer a useful dataset.</p>
+                )}
+                {fetchedPage.truncated && (
+                  <p className="text-[11px] text-amber-200">The extracted preview is truncated to the first 200,000 characters.</p>
+                )}
+                <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-slate-950/70 p-2 text-[11px] leading-relaxed text-slate-300">
+                  {fetchedPage.text || 'No extractable text found on this page.'}
+                </pre>
+              </div>
+            )}
+          </form>
+
           {/* Drag & Drop Zone */}
           <div
             onDragOver={handleDragOver}
@@ -195,6 +355,9 @@ export const FolderUploaderModal: React.FC<FolderUploaderModalProps> = ({
             </h3>
             <p className="text-xs text-slate-400 max-w-md mx-auto mb-5 leading-relaxed">
               Supports Excel/CSV, PDF, DOCX, text files, and photos (JPG, PNG, WEBP, HEIC). Multi-sheet workbooks are combined.
+            </p>
+            <p className="mb-4 text-[11px] leading-relaxed text-slate-500">
+              Selectable PDF and DOCX text is extracted in your browser. Scanned pages and photos use the configured AI vision provider; local OCR is not installed, and small or rotated text may be missed.
             </p>
 
             {loading ? (

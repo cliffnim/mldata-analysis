@@ -14,6 +14,7 @@ import {
   Search,
 } from 'lucide-react';
 import { ExtractedRow, FolderFile } from '../types';
+import { getFileExtractionStatus } from '../utils/extractionStatus';
 
 interface FilesExplorerViewProps {
   files: FolderFile[];
@@ -106,6 +107,7 @@ export const FilesExplorerView: React.FC<FilesExplorerViewProps> = ({
                 {filteredFiles.map((file) => {
                   const extractedRow = rowByFileId.get(file.id);
                   const isCurExtracting = extractingFileId === file.id;
+                  const extractionStatus = getFileExtractionStatus(file, Boolean(extractedRow));
 
                   return (
                     <tr key={file.id} className="hover:bg-slate-800/40 transition-colors group">
@@ -140,13 +142,26 @@ export const FilesExplorerView: React.FC<FilesExplorerViewProps> = ({
                             <RefreshCw className="w-3.5 h-3.5 animate-spin" />
                             <span>ML Extracting...</span>
                           </div>
-                        ) : extractedRow ? (
-                          <div className="flex items-center space-x-2">
-                            <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded text-[11px] bg-emerald-950/60 text-emerald-400 border border-emerald-800">
-                              <CheckCircle2 className="w-3 h-3" />
-                              <span>Extracted ({extractedRow.overallConfidence}%)</span>
+                        ) : (
+                          <div>
+                            <span className={`inline-flex items-center space-x-1 rounded border px-2 py-0.5 text-[11px] ${
+                              extractionStatus.state === 'success'
+                                ? 'border-emerald-800 bg-emerald-950/60 text-emerald-400'
+                                : extractionStatus.state === 'warning'
+                                  ? 'border-amber-800 bg-amber-950/60 text-amber-300'
+                                  : extractionStatus.state === 'error'
+                                    ? 'border-rose-800 bg-rose-950/60 text-rose-300'
+                                    : 'border-slate-700 bg-slate-800 text-slate-300'
+                            }`} title={extractionStatus.detail}>
+                              {extractionStatus.state === 'success' && <CheckCircle2 className="w-3 h-3" />}
+                              {extractionStatus.state === 'error' && <AlertCircle className="w-3 h-3" />}
+                              <span>{extractionStatus.label}</span>
+                              {extractedRow && <span>({extractedRow.overallConfidence}%)</span>}
                             </span>
-                            {extractedRow.anomalies?.length > 0 && (
+                            <p className="mt-1 max-w-sm text-[10px] leading-relaxed text-slate-500" title={extractionStatus.detail}>
+                              {extractionStatus.detail}
+                            </p>
+                            {extractedRow && (extractedRow.anomalies?.length ?? 0) > 0 && (
                               <span
                                 className="text-amber-400 text-[10px] bg-amber-950/60 border border-amber-800 px-1.5 py-0.5 rounded"
                                 title={extractedRow.anomalies.join('; ')}
@@ -155,13 +170,6 @@ export const FilesExplorerView: React.FC<FilesExplorerViewProps> = ({
                               </span>
                             )}
                           </div>
-                        ) : file.status === 'error' ? (
-                          <div className="flex items-center space-x-1 text-rose-400 text-xs">
-                            <AlertCircle className="w-3.5 h-3.5" />
-                            <span>Failed: {file.errorMessage || 'Extraction error'}</span>
-                          </div>
-                        ) : (
-                          <span className="text-slate-400 text-xs">Pending extraction</span>
                         )}
                       </td>
 

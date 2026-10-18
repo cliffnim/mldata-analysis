@@ -48,8 +48,20 @@ export interface FolderFile {
   attachments?: FileAttachment[];
   workbookData?: WorkbookData;
   fileCategory?: 'excel' | 'document' | 'image' | 'text';
+  sourceExtraction?: 'text' | 'vision' | 'text-and-vision' | 'empty' | 'failed';
   status: 'idle' | 'extracting' | 'completed' | 'error';
   errorMessage?: string;
+}
+
+export interface UrlFetchRequest {
+  url: string;
+}
+
+export interface UrlFetchResponse {
+  url: string;
+  contentType: string;
+  text: string;
+  truncated: boolean;
 }
 
 export interface ExtractedRow {
@@ -82,6 +94,40 @@ export interface DataInterpretation {
   anomalies: string[];
   recommendations: string[];
   dataQualityRating?: number;
+}
+
+export type PythonAnalysisMode = 'profile' | 'instruction' | 'train';
+
+export interface PythonAnalysisRequest {
+  mode: PythonAnalysisMode;
+  columns: ColumnDef[];
+  rows: Record<string, any>[];
+  instruction?: string;
+  target?: string;
+}
+
+export interface PythonAnalysisResult {
+  mode: PythonAnalysisMode;
+  title: string;
+  summary?: string;
+  rowCount?: number;
+  columnCount?: number;
+  duplicateRows?: number;
+  missingCells?: number;
+  columns?: Record<string, any>[];
+  correlations?: { left: string; right: string; correlation: number }[];
+  items?: Record<string, any>[];
+  target?: string;
+  task?: 'classification' | 'regression';
+  trainingRows?: number;
+  testRows?: number;
+  rowsUsed?: number;
+  sampled?: boolean;
+  features?: string[];
+  metrics?: Record<string, number | null>;
+  featureImportance?: { feature: string; importance: number }[];
+  samplePredictions?: { actual: unknown; predicted: unknown }[];
+  note?: string;
 }
 
 export interface DataCleanAudit {

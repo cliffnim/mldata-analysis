@@ -10,7 +10,7 @@ Live Demo on GitHub Pages: **[https://cliffnim.github.io/mldata-analysis/](https
 
 - 📁 **Universal Excel Ingestion**: Upload single workbooks or entire folders containing multiple `.xlsx`, `.xls`, and `.csv` files.
 - 🔗 **Automatic Multi-Workbook Consolidation**: Flattens and unifies disparate sheets into a harmonized master spreadsheet with automatic schema inference.
-- 📄 **Document Ingestion**: Extract structured fields from PDF files, DOCX documents, and JPG, PNG, WEBP, HEIC, or HEIF photos. DOCX and selectable PDF text are parsed in the browser; scanned PDF pages and photos use OpenAI-compatible vision models. Document extraction produces one record per file.
+- 📄 **Document Ingestion**: Extract structured fields from PDF files, DOCX documents, and JPG, PNG, WEBP, HEIC, or HEIF photos. DOCX and selectable PDF text are parsed in the browser; scanned PDF pages and photos are sent to the configured OpenAI-compatible vision model (no local OCR engine is bundled). Public HTTP/HTTPS pages can also be imported as text through the same document analysis workflow. Document extraction produces one record per file.
 - 🧹 **Automated Data Cleaner**:
   - Detects duplicate records, stray whitespaces, and missing values.
   - IQR-based statistical outlier identification.
@@ -33,6 +33,7 @@ Live Demo on GitHub Pages: **[https://cliffnim.github.io/mldata-analysis/](https
 ### Prerequisites
 - Node.js (v18 or higher recommended)
 - npm or bun
+- Python 3.11+ and pip for the local Python analysis worker (optional for the existing app features)
 
 ### Local Development
 
@@ -56,9 +57,12 @@ Live Demo on GitHub Pages: **[https://cliffnim.github.io/mldata-analysis/](https
 
 4. **Start the local server:**
    ```bash
-   npm run dev
+   python3 -m venv .venv
+   .venv/bin/pip install -r python/requirements.txt
+   PYTHON_EXECUTABLE=.venv/bin/python npm run dev
    ```
    Open [http://localhost:3000](http://localhost:3000) in your browser.
+   The Python workbench profiles data, supports bounded instructions (summary, missing values, duplicates, outliers, correlations, and group comparisons), and trains a Random Forest classifier or regressor against a selected target. The worker processes at most 50,000 rows per request and does not execute user-provided code. Models are evaluated per request and are not persisted for future predictions. Existing spreadsheet, AI interpretation, and reporting workflows remain available if Python is not installed.
 
 ---
 

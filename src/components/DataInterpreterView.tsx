@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Sparkles,
   TrendingUp,
@@ -17,7 +17,15 @@ import {
   BarChart2,
   MessageSquare,
 } from 'lucide-react';
-import { ColumnDef, DataInterpretation, ExtractedRow, FolderFile } from '../types';
+import {
+  ColumnDef,
+  DataInterpretation,
+  ExtractedRow,
+  FolderFile,
+  PythonAnalysisMode,
+  PythonAnalysisRequest,
+  PythonAnalysisResult,
+} from '../types';
 
 interface DataInterpreterViewProps {
   spreadsheetTitle: string;
@@ -41,6 +49,78 @@ export const DataInterpreterView: React.FC<DataInterpreterViewProps> = ({
   const [question, setQuestion] = useState('');
   const [isAsking, setIsAsking] = useState(false);
   const [qaHistory, setQaHistory] = useState<{ query: string; answer: string; time: string }[]>([]);
+  const [pythonMode, setPythonMode] = useState<PythonAnalysisMode>('profile');
+  const [pythonInstruction, setPythonInstruction] = useState('');
+  const [targetColumn, setTargetColumn] = useState(columns[0]?.key || '');
+  const [pythonResult, setPythonResult] = useState<PythonAnalysisResult | null>(null);
+  const [pythonError, setPythonError] = useState<string | null>(null);
+  const [isRunningPython, setIsRunningPython] = useState(false);
+
+  useEffect(() => {
+    setPythonResult(null);
+    setPythonError(null);
+  }, [rows, columns]);
+
+  useEffect(() => {
+    if (!columns.some((column) => column.key === targetColumn)) {
+      setTargetColumn(columns[0]?.key || '');
+    }
+  }, [columns, targetColumn]);
+
+  const runPythonAnalysis = async () => {
+    if (isRunningPython || rows.length === 0) return;
+    if (pythonMode === 'instruction' && !pythonInstruction.trim()) {
+      setPythonError('Enter an instruction for the Python analysis worker.');
+      return;
+    }
+    if (pythonMode === 'train' && !targetColumn) {
+      setPythonError('Choose a target column before training a model.');
+      return;
+    }
+
+    setIsRunningPython(true);
+    setPythonError(null);
+    setPythonResult(null);
+    try {
+      const request: PythonAnalysisRequest = {
+        mode: pythonMode,
+        columns,
+        rows: rows.map((row) => row.data),
+        ...(pythonMode === 'instruction' ? { instruction: pythonInstruction.trim() } : {}),
+        ...(pythonMode === 'train' ? { target: targetColumn } : {}),
+      };
+      const response = await fetch('/api/python-analysis', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(typeof result.error === 'string' ? result.error : 'Python analysis could not be completed.');
+      }
+      setPythonResult(result as PythonAnalysisResult);
+    } catch (error) {
+      console.warn('Python analysis request failed.');
+      const workerUnavailable = error instanceof TypeError || (error instanceof Error && /failed to fetch|networkerror/i.test(error.message));
+      setPythonError(workerUnavailable
+        ? 'The Python worker endpoint is unavailable. Run the app server with Python 3 and install python/requirements.txt; static hosting alone cannot run the Python worker.'
+        : error instanceof Error
+          ? error.message
+          : 'Python analysis is unavailable. Start the existing app with Python 3 and install python/requirements.txt.');
+    } finally {
+      setIsRunningPython(false);
+    }
+  };
+
+  const formatResultValue = (value: unknown) => {
+    if (value === null || value === undefined) return '—';
+    if (typeof value === 'number') return Number.isInteger(value) ? value.toLocaleString() : value.toLocaleString(undefined, { maximumFractionDigits: 4 });
+    if (typeof value === 'object') return JSON.stringify(value);
+    return String(value);
+  };
+
+  const instructionItems = pythonResult?.items || [];
+  const instructionHeaders = instructionItems.length > 0 ? Object.keys(instructionItems[0]) : [];
 
   // Calculate quick stats on client
   const numericStats: Record<string, { sum: number; avg: number; min: number; max: number }> = {};
@@ -354,6 +434,191 @@ export const DataInterpreterView: React.FC<DataInterpreterViewProps> = ({
           </button>
         </div>
       )}
+
+      <section aria-label="Python analysis workbench" className="rounded-xl border border-teal-900/70 bg-slate-900 p-5 shadow-sm space-y-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-semibold text-white">Python Analysis Workbench</h3>
+            <p className="mt-1 text-xs text-slate-400">
+              Profile the active dataset, request a supported analysis, or train a model against a target column. Runs locally through the Python worker; no AI provider call is used.
+            </p>
+          </div>
+          <span className="text-[11px] text-slate-500">Up to 50,000 rows per request</span>
+        </div>
+
+        <div role="group" aria-label="Python analysis mode" className="flex flex-wrap gap-2">
+          {([
+            ['profile', 'Profile'],
+            ['instruction', 'Instruct analysis'],
+            ['train', 'Train model'],
+          ] as const).map(([mode, label]) => (
+            <button
+              key={mode}
+              type="button"
+              aria-pressed={pythonMode === mode}
+              onClick={() => {
+                setPythonMode(mode);
+                setPythonError(null);
+              }}
+              className={`rounded-lg border px-3 py-2 text-xs font-medium ${pythonMode === mode
+                ? 'border-teal-500 bg-teal-700 text-white'
+                : 'border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700'}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {pythonMode === 'instruction' && (
+          <div className="space-y-2">
+            <label htmlFor="python-analysis-instruction" className="block text-xs font-medium text-slate-200">Analysis instruction</label>
+            <textarea
+              id="python-analysis-instruction"
+              value={pythonInstruction}
+              onChange={(event) => setPythonInstruction(event.target.value)}
+              placeholder="Compare average revenue by region"
+              rows={2}
+              className="w-full resize-y rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white placeholder:text-slate-500 focus:border-teal-500 focus:outline-none"
+            />
+            <p className="text-[11px] text-slate-500">Supported: profile/summary, missing values, duplicates, outliers, correlations, and categorical group comparisons. Unsupported requests are rejected; instructions are never executed as code.</p>
+          </div>
+        )}
+
+        {pythonMode === 'train' && (
+          <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+            <div>
+              <label htmlFor="python-model-target" className="mb-1 block text-xs font-medium text-slate-200">Predict target column</label>
+              <select
+                id="python-model-target"
+                value={targetColumn}
+                onChange={(event) => setTargetColumn(event.target.value)}
+                className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white focus:border-teal-500 focus:outline-none"
+              >
+                {columns.map((column) => <option key={column.key} value={column.key}>{column.label} ({column.type})</option>)}
+              </select>
+            </div>
+            <p className="text-[11px] leading-relaxed text-slate-500 sm:max-w-xs">Random Forest classification or regression is selected from the target. At least 20 rows with target values are required; at most 10,000 are sampled for fitting, with 25% held out. The fitted model is evaluated and discarded, not saved for later predictions.</p>
+          </div>
+        )}
+
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={runPythonAnalysis}
+            disabled={isRunningPython || rows.length === 0 || (pythonMode === 'instruction' && !pythonInstruction.trim())}
+            className="rounded-lg bg-teal-600 px-4 py-2 text-xs font-semibold text-white hover:bg-teal-500 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {isRunningPython ? 'Running Python analysis...' : pythonMode === 'train' ? 'Train and evaluate' : pythonMode === 'instruction' ? 'Run instructed analysis' : 'Generate Python profile'}
+          </button>
+          {isRunningPython && <span role="status" className="text-xs text-teal-300">Processing {rows.length.toLocaleString()} rows...</span>}
+        </div>
+
+        {pythonError && <div role="alert" className="rounded-lg border border-amber-800 bg-amber-950/40 px-3 py-2 text-xs text-amber-200">{pythonError}</div>}
+
+        {pythonResult && (
+          <div className="space-y-4 border-t border-slate-800 pt-4" aria-live="polite">
+            <div>
+              <h4 className="text-sm font-semibold text-white">{pythonResult.title}</h4>
+              {pythonResult.summary && <p className="mt-1 text-xs text-slate-300">{pythonResult.summary}</p>}
+            </div>
+
+            {pythonResult.mode === 'profile' && (
+              <>
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  {[
+                    ['Rows', pythonResult.rowCount],
+                    ['Columns', pythonResult.columnCount],
+                    ['Missing cells', pythonResult.missingCells],
+                    ['Duplicates', pythonResult.duplicateRows],
+                  ].map(([label, value]) => (
+                    <div key={label} className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2">
+                      <span className="block text-[10px] text-slate-500">{label}</span>
+                      <span className="text-sm font-semibold text-white">{formatResultValue(value)}</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="overflow-x-auto rounded-lg border border-slate-800">
+                  <table className="w-full text-left text-[11px]">
+                    <thead className="bg-slate-950 text-slate-400"><tr><th className="px-3 py-2">Column</th><th className="px-3 py-2">Missing</th><th className="px-3 py-2">Unique</th><th className="px-3 py-2">Profile</th></tr></thead>
+                    <tbody className="divide-y divide-slate-800 text-slate-300">
+                      {(pythonResult.columns || []).map((column) => (
+                        <tr key={String(column.key)}>
+                          <td className="px-3 py-2">{String(column.label)}</td>
+                          <td className="px-3 py-2">{formatResultValue(column.missing)}</td>
+                          <td className="px-3 py-2">{formatResultValue(column.unique)}</td>
+                          <td className="max-w-sm px-3 py-2">{formatResultValue(column.statistics || column.topValues)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+
+            {pythonResult.mode === 'instruction' && instructionItems.length > 0 && (
+              <div className="overflow-x-auto rounded-lg border border-slate-800">
+                <table className="w-full text-left text-[11px]">
+                  <thead className="bg-slate-950 text-slate-400"><tr>{instructionHeaders.map((header) => <th key={header} className="px-3 py-2">{header}</th>)}</tr></thead>
+                  <tbody className="divide-y divide-slate-800 text-slate-300">
+                    {instructionItems.map((item, index) => <tr key={index}>{instructionHeaders.map((header) => <td key={header} className="px-3 py-2">{formatResultValue(item[header])}</td>)}</tr>)}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {pythonResult.correlations && pythonResult.correlations.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {pythonResult.correlations.slice(0, 8).map((item) => (
+                  <span key={`${item.left}-${item.right}`} className="rounded-md border border-slate-700 bg-slate-950 px-2.5 py-1.5 text-[11px] text-slate-300">
+                    {item.left} ↔ {item.right}: <strong className="text-teal-200">{item.correlation.toFixed(3)}</strong>
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {pythonResult.mode === 'train' && (
+              <>
+                <p className="text-[11px] text-slate-400">
+                  Target: <strong className="text-slate-200">{pythonResult.target}</strong> · {pythonResult.rowsUsed?.toLocaleString()} rows used · {pythonResult.trainingRows?.toLocaleString()} train / {pythonResult.testRows?.toLocaleString()} test
+                </p>
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  {Object.entries(pythonResult.metrics || {}).map(([label, value]) => (
+                    <div key={label} className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2">
+                      <span className="block text-[10px] capitalize text-slate-500">{label.replace(/[A-Z]/g, (letter) => ` ${letter.toLowerCase()}`)}</span>
+                      <span className="text-sm font-semibold text-white">{formatResultValue(value)}</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="space-y-2">
+                  <h5 className="text-xs font-semibold text-slate-200">Most important features</h5>
+                  {(pythonResult.featureImportance || []).slice(0, 10).map((feature) => (
+                    <div key={feature.feature} className="grid grid-cols-[minmax(0,1fr)_3rem] items-center gap-3 text-[11px]">
+                      <div className="min-w-0">
+                        <div className="truncate text-slate-300" title={feature.feature}>{feature.feature}</div>
+                        <div className="mt-1 h-1.5 rounded bg-slate-800"><div className="h-full rounded bg-teal-500" style={{ width: `${Math.max(0, Math.min(feature.importance * 100, 100))}%` }} /></div>
+                      </div>
+                      <span className="text-right font-mono text-slate-400">{feature.importance.toFixed(3)}</span>
+                    </div>
+                  ))}
+                </div>
+                {pythonResult.samplePredictions && pythonResult.samplePredictions.length > 0 && (
+                  <div className="overflow-x-auto rounded-lg border border-slate-800">
+                    <table className="w-full text-left text-[11px]">
+                      <thead className="bg-slate-950 text-slate-400"><tr><th className="px-3 py-2">Holdout actual</th><th className="px-3 py-2">Model prediction</th></tr></thead>
+                      <tbody className="divide-y divide-slate-800 text-slate-300">
+                        {pythonResult.samplePredictions.map((prediction, index) => (
+                          <tr key={index}><td className="px-3 py-2">{formatResultValue(prediction.actual)}</td><td className="px-3 py-2">{formatResultValue(prediction.predicted)}</td></tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                <p className="text-[10px] leading-relaxed text-slate-500">{pythonResult.note}</p>
+              </>
+            )}
+          </div>
+        )}
+      </section>
 
       {/* Interactive Natural Language Q&A / Ask Your Data */}
       <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4">

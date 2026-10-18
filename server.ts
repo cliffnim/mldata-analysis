@@ -1,9 +1,11 @@
 import express from 'express';
 import dotenv from 'dotenv';
 import path from 'path';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'url';
 import OpenAI from 'openai';
 import type { ChatCompletionContentPart } from 'openai/resources/chat/completions';
+import { fetchPublicPage, UrlFetchError } from './server/urlFetcher';
 
 dotenv.config();
 
@@ -12,6 +14,8 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = 3000;
+const PYTHON_ANALYSIS_TIMEOUT_MS = 120_000;
+const PYTHON_ANALYSIS_MAX_REQUEST_BYTES = 20 * 1024 * 1024;
 
 // Increase payload limit to handle base64 images / multi-file text payloads
 app.use(express.json({ limit: '60mb' }));
@@ -276,6 +280,84 @@ Return strictly valid JSON adhering to the schema.`;
     console.error('Error in interpret-data:', error);
     return res.status(500).json({ error: error?.message || 'Data interpretation failed' });
   }
+});
+
+/**
+ * POST /api/python-analysis
+ * Runs a bounded local profile, supported instruction, or supervised model fit.
+ */
+app.post('/api/python-analysis', (req, res) => {
+  const payload = JSON.stringify(req.body || {});
+  if (Buffer.byteLength(payload, 'utf8') > PYTHON_ANALYSIS_MAX_REQUEST_BYTES) {
+    return res.status(413).json({ error: 'Python analysis requests are limited to 20 MB.' });
+  }
+
+  const workerPath = path.resolve(process.cwd(), 'python', 'analysis_worker.py');
+  const pythonExecutable = process.env.PYTHON_EXECUTABLE || 'python3';
+  const worker = spawn(pythonExecutable, [workerPath], { windowsHide: true });
+  let output = '';
+  let diagnostics = '';
+  let timedOut = false;
+  let outputTooLarge = false;
+
+  const timer = setTimeout(() => {
+    timedOut = true;
+    worker.kill('SIGKILL');
+  }, PYTHON_ANALYSIS_TIMEOUT_MS);
+
+  worker.stdout.setEncoding('utf8');
+  worker.stderr.setEncoding('utf8');
+  worker.stdout.on('data', (chunk: string) => {
+    output += chunk;
+    if (Buffer.byteLength(output, 'utf8') > 2 * 1024 * 1024) {
+      outputTooLarge = true;
+      worker.kill('SIGKILL');
+    }
+  });
+  worker.stderr.on('data', (chunk: string) => {
+    diagnostics = (diagnostics + chunk).slice(-4000);
+  });
+  worker.on('error', (error) => {
+    clearTimeout(timer);
+    if (error.message.includes('ENOENT')) {
+      return res.status(503).json({ error: 'Python 3 was not found. Install Python 3 and set PYTHON_EXECUTABLE if it is not available as python3.' });
+    }
+    console.error('Python analysis worker could not start:', error.message);
+    return res.status(500).json({ error: 'The Python analysis worker could not start.' });
+  });
+  worker.on('close', (code) => {
+    clearTimeout(timer);
+    if (res.headersSent) return;
+    if (timedOut) return res.status(504).json({ error: 'Python analysis exceeded the two-minute time limit.' });
+    if (outputTooLarge) return res.status(502).json({ error: 'Python analysis returned an oversized response.' });
+
+    let result: { error?: string };
+    try {
+      result = JSON.parse(output);
+    } catch {
+      if (/ModuleNotFoundError|ImportError/.test(diagnostics)) {
+        return res.status(503).json({ error: 'Python analysis dependencies are missing. Install them with python3 -m pip install -r python/requirements.txt.' });
+      }
+      console.error('Python analysis returned invalid output:', diagnostics.slice(-1000));
+      return res.status(500).json({ error: 'Python analysis returned an invalid response.' });
+    }
+
+    if (code !== 0) {
+      if (code === 2) return res.status(400).json({ error: result.error || 'The Python analysis request is invalid.' });
+      if (/ModuleNotFoundError|ImportError/.test(diagnostics)) {
+        return res.status(503).json({ error: 'Python analysis dependencies are missing. Install them with python3 -m pip install -r python/requirements.txt.' });
+      }
+      console.error('Python analysis failed:', diagnostics.slice(-1000));
+      return res.status(500).json({ error: result.error || 'Python analysis failed. Check the dataset and Python dependencies.' });
+    }
+    if (result.error) return res.status(400).json({ error: result.error });
+    return res.json(result);
+  });
+
+  worker.stdin.on('error', () => {
+    if (!worker.killed) worker.kill('SIGKILL');
+  });
+  worker.stdin.end(payload);
 });
 
 /**
@@ -547,7 +629,19 @@ Return valid JSON:
   }
 });
 
+app.post('/api/fetch-url', async (req, res) => {
+  try {
+    const { url: rawUrl } = req.body || {};
+    if (!rawUrl || typeof rawUrl !== 'string') return res.status(400).json({ error: 'url is required' });
+    return res.json(await fetchPublicPage(rawUrl));
+  } catch (err: unknown) {
+    const error = err instanceof UrlFetchError ? err : new UrlFetchError('The website could not be fetched.', 502);
+    return res.status(error.statusCode).json({ error: error.message });
+  }
+});
+
 // Configure Vite middleware in development or serve static in production
+
 async function startServer() {
   const isProduction = process.env.NODE_ENV === 'production';
 

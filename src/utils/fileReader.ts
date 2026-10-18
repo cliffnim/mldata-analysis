@@ -111,6 +111,7 @@ export async function readFileAsync(file: File, relativePath?: string): Promise<
             size: file.size,
             mimeType: file.type || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             fileCategory: 'excel',
+            sourceExtraction: 'text',
             workbookData,
             content: textSummary,
             status: 'idle',
@@ -124,6 +125,7 @@ export async function readFileAsync(file: File, relativePath?: string): Promise<
             size: file.size,
             mimeType: file.type || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             fileCategory: 'excel',
+            sourceExtraction: 'failed',
             content: `(Could not parse Excel workbook: ${file.name} - ${err.message})`,
             status: 'error',
             errorMessage: 'Corrupt or unreadable Excel file: ' + err.message,
@@ -138,6 +140,7 @@ export async function readFileAsync(file: File, relativePath?: string): Promise<
           relativePath: path,
           size: file.size,
           mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            sourceExtraction: 'failed',
           status: 'error',
           errorMessage: 'Failed to read file',
         });
@@ -187,6 +190,9 @@ export async function readFileAsync(file: File, relativePath?: string): Promise<
             fileCategory: 'document',
             content: content || (attachments.length ? 'Scanned PDF pages attached as images.' : ''),
             attachments,
+            sourceExtraction: content.trim()
+              ? (attachments.length ? 'text-and-vision' : 'text')
+              : (attachments.length ? 'vision' : 'empty'),
             status: 'idle',
           });
         } catch (err: any) {
@@ -197,6 +203,7 @@ export async function readFileAsync(file: File, relativePath?: string): Promise<
             size: file.size,
             mimeType,
             fileCategory: 'document',
+            sourceExtraction: 'failed',
             status: 'error',
             errorMessage: `Could not read PDF: ${err.message || 'Invalid PDF file'}`,
           });
@@ -210,6 +217,7 @@ export async function readFileAsync(file: File, relativePath?: string): Promise<
           size: file.size,
           mimeType,
           fileCategory: 'document',
+            sourceExtraction: 'failed',
           status: 'error',
           errorMessage: 'Failed to read PDF',
         });
@@ -228,6 +236,7 @@ export async function readFileAsync(file: File, relativePath?: string): Promise<
             mimeType,
             fileCategory: 'document',
             content: extracted.value,
+            sourceExtraction: extracted.value.trim() ? 'text' : 'empty',
             status: 'idle',
           });
         } catch (err: any) {
@@ -239,6 +248,7 @@ export async function readFileAsync(file: File, relativePath?: string): Promise<
             mimeType,
             fileCategory: 'document',
             content: '',
+            sourceExtraction: 'failed',
             status: 'error',
             errorMessage: `Could not read Word document: ${err.message || 'Invalid DOCX file'}`,
           });
@@ -252,6 +262,7 @@ export async function readFileAsync(file: File, relativePath?: string): Promise<
           size: file.size,
           mimeType,
           fileCategory: 'document',
+            sourceExtraction: 'failed',
           status: 'error',
           errorMessage: 'Failed to read Word document',
         });
@@ -268,6 +279,7 @@ export async function readFileAsync(file: File, relativePath?: string): Promise<
           mimeType: mimeType || 'text/plain',
           fileCategory: 'text',
           content: reader.result as string,
+            sourceExtraction: typeof reader.result === 'string' && reader.result.trim() ? 'text' : 'empty',
           status: 'idle',
         });
       };
@@ -279,6 +291,7 @@ export async function readFileAsync(file: File, relativePath?: string): Promise<
           size: file.size,
           mimeType: mimeType || 'text/plain',
           content: `(Could not read file: ${file.name})`,
+            sourceExtraction: 'failed',
           status: 'error',
           errorMessage: 'Failed to read file',
         });
@@ -312,6 +325,7 @@ export async function readFileAsync(file: File, relativePath?: string): Promise<
               mimeType,
               fileCategory: 'image',
               attachments: [{ mimeType: 'image/jpeg', base64: jpegBase64 }],
+              sourceExtraction: 'vision',
               status: 'idle',
             });
             return;
@@ -324,6 +338,7 @@ export async function readFileAsync(file: File, relativePath?: string): Promise<
                 size: file.size,
                 mimeType,
                 fileCategory: 'image',
+                sourceExtraction: 'failed',
                 status: 'error',
                 errorMessage: `Could not convert this photo in the browser. Try JPG, PNG, or WEBP. ${err.message || ''}`.trim(),
               });
@@ -339,6 +354,7 @@ export async function readFileAsync(file: File, relativePath?: string): Promise<
             mimeType,
             fileCategory: 'image',
             attachments: [{ mimeType, base64: base64Data }],
+            sourceExtraction: 'vision',
             status: 'idle',
           });
           return;
@@ -352,6 +368,7 @@ export async function readFileAsync(file: File, relativePath?: string): Promise<
           mimeType,
           fileCategory: 'document',
           base64: base64Data,
+          sourceExtraction: 'empty',
           status: 'idle',
         });
       };
@@ -362,6 +379,7 @@ export async function readFileAsync(file: File, relativePath?: string): Promise<
           relativePath: path,
           size: file.size,
           mimeType,
+          sourceExtraction: 'failed',
           status: 'error',
           errorMessage: 'Failed to read media/binary file',
         });

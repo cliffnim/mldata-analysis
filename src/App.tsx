@@ -24,6 +24,7 @@ import {
   ViewTab,
 } from './types';
 import { exportToExcel, exportToCSV, copyForGoogleSheets } from './utils/exporter';
+import { getExtractionFailureMessage } from './utils/extractionStatus';
 import {
   generateClientDataInterpretation,
   generateClientFullReport,
@@ -59,6 +60,7 @@ export default function App() {
   // Cleaning History State
   const [cleanHistory, setCleanHistory] = useState<CleanHistoryItem[]>([]);
   const [rowsHistory, setRowsHistory] = useState<ExtractedRow[][]>([]);
+  const [preCleanRows, setPreCleanRows] = useState<ExtractedRow[] | null>(null);
 
   // Modal / Drawer States
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
@@ -95,6 +97,7 @@ export default function App() {
     setRows([]);
     setRowsHistory([]);
     setCleanHistory([]);
+    setPreCleanRows(null);
     setDataInterpretation(null);
     setFullReport(null);
     setSchemaDetectionError(null);
@@ -302,6 +305,7 @@ export default function App() {
    * Handle Cleaning Rows and track history for Undo
    */
   const handleUpdateCleanedRows = (updatedRows: ExtractedRow[], historyItem: CleanHistoryItem) => {
+    setPreCleanRows((previous) => previous ?? rows.map((row) => ({ ...row, data: { ...row.data } })));
     setRowsHistory((prev) => [...prev, rows]);
     setCleanHistory((prev) => [historyItem, ...prev]);
     setRows(updatedRows);
@@ -318,6 +322,16 @@ export default function App() {
     setRows(previous);
     setRowsHistory((prev) => prev.slice(0, prev.length - 1));
     setCleanHistory((prev) => prev.slice(1));
+  };
+
+  const handleResetCleaning = () => {
+    if (!preCleanRows) return;
+    setRows(preCleanRows.map((row) => ({ ...row, data: { ...row.data } })));
+    setRowsHistory([]);
+    setCleanHistory([]);
+    setPreCleanRows(null);
+    setDataInterpretation(null);
+    setFullReport(null);
   };
 
   /**
@@ -523,7 +537,11 @@ export default function App() {
         }),
       });
 
-      if (!res.ok) throw new Error(`Server error: ${res.status}`);
+      if (!res.ok) {
+        const errorResponse = await res.json().catch(() => ({}));
+        console.warn('Document extraction request failed', { fileName: file.name, status: res.status });
+        throw new Error(getExtractionFailureMessage(file, typeof errorResponse.error === 'string' ? errorResponse.error : ''));
+      }
       const extracted = await res.json();
 
       const rowData: Record<string, any> = {};
@@ -556,10 +574,11 @@ export default function App() {
       );
 
       return newRow;
-    } catch (err: any) {
-      console.error(err);
+    } catch (err: unknown) {
+      const failureMessage = getExtractionFailureMessage(file, err instanceof Error ? err.message : '');
+      console.warn('Document extraction failed', { fileName: file.name });
       setFiles((prev) =>
-        prev.map((f) => (f.id === fileId ? { ...f, status: 'error', errorMessage: err.message } : f))
+        prev.map((f) => (f.id === fileId ? { ...f, status: 'error', errorMessage: failureMessage } : f))
       );
       return null;
     } finally {
@@ -602,7 +621,11 @@ export default function App() {
           }),
         });
 
-        if (!res.ok) throw new Error('Extraction failed');
+        if (!res.ok) {
+          const errorResponse = await res.json().catch(() => ({}));
+          console.warn('Batch document extraction request failed', { fileName: file.name, status: res.status });
+          throw new Error(getExtractionFailureMessage(file, typeof errorResponse.error === 'string' ? errorResponse.error : ''));
+        }
         const extracted = await res.json();
 
         const rowData: Record<string, any> = {};
@@ -638,9 +661,11 @@ export default function App() {
           ...prev,
           { fileName: file.name, status: 'success', confidence: newRow.overallConfidence },
         ]);
-      } catch (err: any) {
+      } catch (err: unknown) {
+        const failureMessage = getExtractionFailureMessage(file, err instanceof Error ? err.message : '');
+        console.warn('Batch document extraction failed', { fileName: file.name });
         setFiles((prev) =>
-          prev.map((f) => (f.id === file.id ? { ...f, status: 'error', errorMessage: err.message } : f))
+          prev.map((f) => (f.id === file.id ? { ...f, status: 'error', errorMessage: failureMessage } : f))
         );
         setBatchLogs((prev) => [...prev, { fileName: file.name, status: 'error' }]);
       }
@@ -927,6 +952,7 @@ export default function App() {
                 onUpdateRows={handleUpdateCleanedRows}
                 cleanHistory={cleanHistory}
                 onRevertLastClean={handleRevertLastClean}
+                onResetCleaning={handleResetCleaning}
                 onNavigateToTab={(tab) => setActiveTab(tab)}
               />
             )}
